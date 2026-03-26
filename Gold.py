@@ -21,10 +21,8 @@ logger = logging.getLogger(__name__)
 beijing_tz = pytz.timezone('Asia/Shanghai')
 
 # ==========================================
-# 此处保留您原本所有的字典、HTML 模板和抓取函数
-# (indicator_info, help_modal_html, fetch_realtime_sge_fallback)
+# 静态资源与常量定义
 # ==========================================
-
 indicator_info = {
     'Price': {'name': '收盘价', 'meaning': '当日最后一笔成交价格', 'action': '反映市场最终共识。'},
     'MA5': {'name': '5日均线', 'meaning': '5个交易日均价', 'action': '短期趋势参考。'},
@@ -54,7 +52,6 @@ help_modal_html += """
     </div>
 </div>
 <script>
-// 您原本的 JavaScript 代码完美保留...
 (function() {
     const buildTooltip = () => {
         const tip = document.createElement('div');
@@ -124,8 +121,11 @@ def fetch_realtime_sge_fallback():
         pass
     return None, None
 
-# 使用 st.cache_data 限制刷新频率，避免 API 被封 (TTL=120秒，即2分钟内无论怎么刷都只请求一次)
-@st.cache_data(ttl=120, show_spinner=False)
+# ==========================================
+# 数据抓取与页面生成核心
+# 将自动缓存时间(TTL)也设定为1200秒(20分钟)，与手动限制保持一致
+# ==========================================
+@st.cache_data(ttl=1200, show_spinner=False)
 def generate_and_save_html(session="实时"):
     now_beijing = datetime.now(beijing_tz)
     start_date = "2024-01-01"
@@ -173,16 +173,30 @@ def generate_and_save_html(session="实时"):
         
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
         
+        # --- [重叠修复]：更新了布局参数，拉高了顶部边距，使图例悬浮居中 ---
         fig.update_layout(
-            title={'text': f"<b>SGE GOLD REAL-TIME TERMINAL</b><br><span style='font-size:12px; color:#888;'>Seamless History + Real-time Sync | Updated: " + now_beijing.strftime('%Y-%m-%d %H:%M:%S') + "</span>", 'y':0.95, 'x':0.5, 'xanchor': 'center', 'yanchor': 'top', 'font': {'size': 24, 'color': '#00ffcc', 'family': 'Courier New'}},
+            title={
+                'text': f"<b>SGE GOLD REAL-TIME TERMINAL</b><br><span style='font-size:12px; color:#888;'>Seamless History + Real-time Sync | Updated: " + now_beijing.strftime('%Y-%m-%d %H:%M:%S') + "</span>", 
+                'x': 0.5, 
+                'xanchor': 'center', 
+                'yanchor': 'top'
+            },
             paper_bgcolor='#0a0e14', plot_bgcolor='#0a0e14', font=dict(color='#e0e0e0', family='Courier New'),
             hoverlabel=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)", align="right", namelength=0, font=dict(size=7, color="rgba(255, 77, 77, 0.6)", family="Courier New")),
             xaxis=dict(showgrid=True, gridcolor='#1f2937', range=[df['Date'].iloc[max(0, len(df)-60)], future_view], type="date"),
             xaxis2=dict(showgrid=True, gridcolor='#1f2937', rangeslider=dict(visible=True, bgcolor='#111827', thickness=0.05), type="date"),
             yaxis=dict(showgrid=True, gridcolor='#1f2937', side='right', title="Price"),
             yaxis2=dict(showgrid=True, gridcolor='#1f2937', side='right', title="MACD"),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=0.9, bgcolor='rgba(0,0,0,0)'),
-            hovermode="closest", autosize=True, margin=dict(l=10, r=50, t=100, b=10) # 减小边距适配 Streamlit
+            legend=dict(
+                orientation="h", 
+                yanchor="bottom", 
+                y=1.05, 
+                xanchor="center", 
+                x=0.5, 
+                bgcolor='rgba(0,0,0,0)'
+            ),
+            hovermode="closest", autosize=True, 
+            margin=dict(l=10, r=50, t=130, b=10) # 增加了 t(top) 的高度给标题和图例留出空间
         )
         
         fig.update_xaxes(showspikes=True, spikecolor="#555", spikesnap="cursor", spikemode="across")
@@ -211,28 +225,51 @@ def generate_and_save_html(session="实时"):
         return False
 
 # ==========================================
-# 核心改动：用 Streamlit 替代 APScheduler 
+# 主程序：UI渲染与冷却时间逻辑
 # ==========================================
 def main():
+    # 初始化 Session State 中的上次刷新时间
+    if "last_refresh_time" not in st.session_state:
+        st.session_state.last_refresh_time = None
+
     # 顶部工具栏
     col1, col2 = st.columns([8, 2])
     with col1:
         st.markdown("<h3 style='color:#00ffcc;'>📈 黄金实时量化看板</h3>", unsafe_allow_html=True)
     with col2:
-        # 添加手动刷新按钮
+        # 手动刷新按钮逻辑
         if st.button("🔄 同步最新行情", use_container_width=True):
-            with st.spinner('正在从交易所抓取最新切片数据...'):
-                generate_and_save_html.clear() # 清除缓存，强制抓取
-                generate_and_save_html()
+            now = datetime.now()
             
-    # 初次运行或缓存生效时，调用生成逻辑
+            # --- [核心修改]：20分钟强制冷却逻辑 ---
+            if st.session_state.last_refresh_time is not None:
+                elapsed_seconds = (now - st.session_state.last_refresh_time).total_seconds()
+                if elapsed_seconds < 1200:  # 1200秒 = 20分钟
+                    remaining_mins = int((1200 - elapsed_seconds) / 60) + 1
+                    st.warning(f"刷新过于频繁！请等待 {remaining_mins} 分钟后再试。")
+                else:
+                    # 冷却完毕，允许抓取
+                    with st.spinner('正在从交易所抓取最新切片数据...'):
+                        generate_and_save_html.clear() # 清除缓存
+                        generate_and_save_html()
+                        st.session_state.last_refresh_time = now
+                        st.success("行情已更新！")
+            else:
+                # 第一次点击刷新
+                with st.spinner('正在从交易所抓取最新切片数据...'):
+                    generate_and_save_html.clear()
+                    generate_and_save_html()
+                    st.session_state.last_refresh_time = now
+                    st.success("行情已更新！")
+            
+    # 执行图表生成（缓存命中时秒级加载，未命中时后台抓取）
     generate_and_save_html()
     
-    # 读取生成的 index.html 并通过 iframe 原封不动地嵌入到网页中！
+    # 渲染生成的 index.html 到前端
     if os.path.exists("index.html"):
         with open("index.html", "r", encoding="utf-8") as f:
             html_content = f.read()
-            # 设置高度为 850，足够容纳您的双图表
+            # 设置高度为 850，滚动条默认开启适配超长内容
             components.html(html_content, height=850, scrolling=True)
     else:
         st.error("图表数据生成失败，请检查数据接口状态。")
