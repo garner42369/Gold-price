@@ -123,7 +123,7 @@ def fetch_realtime_sge_fallback():
 
 # ==========================================
 # 数据抓取与页面生成核心
-# 将自动缓存时间(TTL)也设定为1200秒(20分钟)，与手动限制保持一致
+# 将自动缓存时间(TTL)设定为1200秒(20分钟)
 # ==========================================
 @st.cache_data(ttl=1200, show_spinner=False)
 def generate_and_save_html(session="实时"):
@@ -173,30 +173,33 @@ def generate_and_save_html(session="实时"):
         
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
         
-        # --- [重叠修复]：更新了布局参数，拉高了顶部边距，使图例悬浮居中 ---
+        # --- 【核心】终极排版方案：上下分离 + 物理隔离 ---
         fig.update_layout(
+            # 标题去掉了绝对Y轴，自然吸顶向下生长
             title={
                 'text': f"<b>SGE GOLD REAL-TIME TERMINAL</b><br><span style='font-size:12px; color:#888;'>Seamless History + Real-time Sync | Updated: " + now_beijing.strftime('%Y-%m-%d %H:%M:%S') + "</span>", 
                 'x': 0.5, 
-                'xanchor': 'center', 
-                'yanchor': 'top'
+                'xanchor': 'center'
             },
+            # 图例悬停在 K 线图正上方
+            legend=dict(
+                orientation="h", 
+                yanchor="bottom", 
+                y=1.01, 
+                xanchor="center", 
+                x=0.5, 
+                bgcolor='rgba(0,0,0,0)'
+            ),
+            # 撑开 150px 的顶部安全距离，字体再大也不怕
+            margin=dict(l=10, r=50, t=150, b=10),
+            
             paper_bgcolor='#0a0e14', plot_bgcolor='#0a0e14', font=dict(color='#e0e0e0', family='Courier New'),
             hoverlabel=dict(bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)", align="right", namelength=0, font=dict(size=7, color="rgba(255, 77, 77, 0.6)", family="Courier New")),
             xaxis=dict(showgrid=True, gridcolor='#1f2937', range=[df['Date'].iloc[max(0, len(df)-60)], future_view], type="date"),
             xaxis2=dict(showgrid=True, gridcolor='#1f2937', rangeslider=dict(visible=True, bgcolor='#111827', thickness=0.05), type="date"),
             yaxis=dict(showgrid=True, gridcolor='#1f2937', side='right', title="Price"),
             yaxis2=dict(showgrid=True, gridcolor='#1f2937', side='right', title="MACD"),
-            legend=dict(
-                orientation="h", 
-                yanchor="bottom", 
-                y=1.05, 
-                xanchor="center", 
-                x=0.5, 
-                bgcolor='rgba(0,0,0,0)'
-            ),
-            hovermode="closest", autosize=True, 
-            margin=dict(l=10, r=50, t=130, b=10) # 增加了 t(top) 的高度给标题和图例留出空间
+            hovermode="closest", autosize=True
         )
         
         fig.update_xaxes(showspikes=True, spikecolor="#555", spikesnap="cursor", spikemode="across")
@@ -225,7 +228,7 @@ def generate_and_save_html(session="实时"):
         return False
 
 # ==========================================
-# 主程序：UI渲染与冷却时间逻辑
+# 主程序：UI渲染与 20分钟冷却保护机制
 # ==========================================
 def main():
     # 初始化 Session State 中的上次刷新时间
@@ -241,7 +244,7 @@ def main():
         if st.button("🔄 同步最新行情", use_container_width=True):
             now = datetime.now()
             
-            # --- [核心修改]：20分钟强制冷却逻辑 ---
+            # --- 20分钟强制冷却逻辑 ---
             if st.session_state.last_refresh_time is not None:
                 elapsed_seconds = (now - st.session_state.last_refresh_time).total_seconds()
                 if elapsed_seconds < 1200:  # 1200秒 = 20分钟
