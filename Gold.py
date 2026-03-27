@@ -246,12 +246,47 @@ def generate_and_save_html():
         fig.add_trace(go.Scatter(x=df['Date'], y=df['MA10'], mode='lines', name='MA10', line=dict(color='#00bfff', width=1, dash='dashdot'), opacity=0.7, hovertemplate="%{x|%Y.%-m.%-d}-MA10-%{y:.2f}<extra></extra>", hoverinfo='skip'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['Date'], y=df['MA20'], mode='lines', name='MA20', line=dict(color='#ffff00', width=1, dash='dash'), opacity=0.7, hovertemplate="%{x|%Y.%-m.%-d}-MA20-%{y:.2f}<extra></extra>", hoverinfo='skip'), row=1, col=1)
 
-        # 【重点修改】在图表标注中直接显示数据来源（是基准价还是实时价）
-        annotation_text = f"今日({price_source}): {display_price:.2f}"
+        # 【重点修改】在图表标注中直接显示数据来源（是基准价还是实时价），并补充当前MACD状态（金叉/死叉）
+        current_dif = df['DIF'].iloc[-1]
+        current_dea = df['DEA'].iloc[-1]
+        cross_status = "金叉" if current_dif >= current_dea else "死叉"
+        
+        annotation_text = f"今日({price_source}): {display_price:.2f}({cross_status})"
         fig.add_annotation(x=latest_row['Date'], y=display_price, text=annotation_text, showarrow=True, arrowhead=2, arrowcolor="#ff4d4d", ax=0, ay=-40, font=dict(size=14, color="#ff4d4d", family="Arial Black"), row=1, col=1)
 
+        # 计算 MACD 的金叉/死叉区域 (DIF 和 DEA 的相对位置)
+        # 如果 DIF >= DEA 是金叉区间，DIF < DEA 是死叉区间
+        # 我们可以分别绘制这两条线，并使用 fill='tonexty' 来填充它们之间的区域。
+        # 为了实现条件填充颜色，我们需要将数据拆分为金叉部分和死叉部分
+        
+        # 复制数据以便处理
+        df_fill = df[['Date', 'DIF', 'DEA']].copy()
+        
+        # 寻找交叉点以实现平滑填充（可选，简单处理直接用数据点）
+        # 这里为了简单高效，我们可以用两组 Trace 来实现条件填充
+        # 由于 plotly 的 fill='tonexty' 只能填充到上一个 trace，我们需要更精细的控制。
+        # 更好的方法是：画一条 y=0 的基准线，将 DIF-DEA 的正负部分画成两组区域（类似 MACD 柱），
+        # 或者使用 plotly 的 `fill` 特性在 DIF 和 DEA 之间直接画多边形。
+        # 但在 plotly 中，最简单实现两线间条件填充的方法是分别提取 DIF>DEA 和 DIF<DEA 的部分。
+        
+        # 为了在 DIF 和 DEA 之间填充：
+        # 先画一条不可见的 DEA 线
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['DEA'], mode='lines', line=dict(color='rgba(0,0,0,0)', width=0), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        
+        # 金叉区间 (DIF >= DEA)：将 DIF 小于 DEA 的部分设为 NaN
+        dif_golden = df['DIF'].where(df['DIF'] >= df['DEA'], df['DEA'])
+        fig.add_trace(go.Scatter(x=df['Date'], y=dif_golden, mode='lines', line=dict(color='rgba(0,0,0,0)', width=0), fill='tonexty', fillcolor='rgba(255, 77, 77, 0.2)', name='金叉区间', showlegend=False, hoverinfo='skip'), row=2, col=1)
+
+        # 死叉区间 (DIF < DEA)：将 DIF 大于 DEA 的部分设为 NaN
+        # 重新画一条 DEA 作为基准
+        fig.add_trace(go.Scatter(x=df['Date'], y=df['DEA'], mode='lines', line=dict(color='rgba(0,0,0,0)', width=0), showlegend=False, hoverinfo='skip'), row=2, col=1)
+        dif_death = df['DIF'].where(df['DIF'] < df['DEA'], df['DEA'])
+        fig.add_trace(go.Scatter(x=df['Date'], y=dif_death, mode='lines', line=dict(color='rgba(0,0,0,0)', width=0), fill='tonexty', fillcolor='rgba(0, 255, 204, 0.2)', name='死叉区间', showlegend=False, hoverinfo='skip'), row=2, col=1)
+
+        # 重新绘制可见的 DIF 和 DEA 实体线条覆盖在填充之上
         fig.add_trace(go.Scatter(x=df['Date'], y=df['DIF'], mode='lines', name='DIF', line=dict(color='#ffffff', width=1), hovertemplate="%{x|%Y.%-m.%-d}-DIF-%{y:.2f}<extra></extra>", hoverinfo='skip'), row=2, col=1)
         fig.add_trace(go.Scatter(x=df['Date'], y=df['DEA'], mode='lines', name='DEA', line=dict(color='#ffff00', width=1), hovertemplate="%{x|%Y.%-m.%-d}-DEA-%{y:.2f}<extra></extra>", hoverinfo='skip'), row=2, col=1)
+        
         colors = ['#ff4d4d' if val >= 0 else '#00ffcc' for val in df['MACD_Hist']]
         fig.add_trace(go.Bar(x=df['Date'], y=df['MACD_Hist'], name='MACD Hist', marker_color=colors, opacity=0.8, hovertemplate="%{x|%Y.%-m.%-d}-MACD-%{y:.2f}<extra></extra>", hoverinfo='skip'), row=2, col=1)
 
