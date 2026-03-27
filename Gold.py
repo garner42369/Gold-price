@@ -108,50 +108,65 @@ help_modal_html += """
 """
 
 # ==========================================
-# 【核心升级】智能降级数据抓取策略：基准价优先，现货价兜底
+# 【核心升级】智能降级数据抓取策略：多级兜底的高可用策略
 # ==========================================
-def get_dynamic_today_price(now_beijing):
+def get_dynamic_today_price(now_beijing, df_hist):
     today_str = now_beijing.strftime('%Y-%m-%d')
-    headers = {'Referer': 'https://finance.sina.com.cn'}
     
-    # --- 尝试 1：获取当日最高优的权威定价：上海金基准价 (SHAU) ---
+    # --- 优先级 1：AkShare 上海金现货数据 ---
     try:
-        url_shau = "https://hq.sinajs.cn/list=shau"
-        resp = requests.get(url_shau, headers=headers, timeout=5)
-        resp.encoding = 'gbk'
-        
-        # 严谨判断：只有接口返回的字符串里确确实实包含了“今天的日期”，才说明基准价已发布
-        if today_str in resp.text:
-            data_str = re.search(r'"(.*)"', resp.text).group(1)
-            elements = data_str.split(',')
-            
-            # 上海金有早盘(AM)和晚盘(PM)两次定价。
-            # 通常 elements[2] 是最新价/下午定价，elements[1]是上午定价。
-            pm_price = float(elements[2])
-            am_price = float(elements[1])
-            
-            # 如果下午定价已经出了就用下午的，否则用上午的
-            final_benchmark = pm_price if pm_price > 0 else am_price
-            
-            if final_benchmark > 0:
-                return final_benchmark, "上海金基准价"
+        if not df_hist.empty:
+            latest_row = df_hist.iloc[-1]
+            latest_date = latest_row['Date']
+            latest_date_str = latest_date.strftime('%Y-%m-%d')
+            if latest_date_str == today_str:
+                return float(latest_row['Gold_RMB_Gram']), "上海金现货"
     except Exception as e:
-        logger.warning(f"检测上海金基准价异常: {e}")
+        logger.warning(f"校验上海金现货最新日期异常: {e}")
 
-    # --- 尝试 2：基准价没出，降级使用实时跳动的现货价 (Au99.99) ---
+    # --- 优先级 2：腾讯财经 黄金ETF数据（国内替代） ---
     try:
-        url_au = "https://hq.sinajs.cn/list=sge_au9999"
-        resp = requests.get(url_au, headers=headers, timeout=5)
+        url_etf = "https://qt.gtimg.cn/q=sh518880"
+        resp = requests.get(url_etf, timeout=5)
         resp.encoding = 'gbk'
-        data_str = re.search(r'"(.*)"', resp.text).group(1)
-        elements = data_str.split(',')
-        
-        # SGE Au99.99 最新价在索引 3
-        current_spot_price = float(elements[3])
-        if current_spot_price > 0:
-            return current_spot_price, "Au99.99实时"
+        if resp.status_code == 200:
+            data_str = resp.text.split('=')[1].strip('";\n')
+            elements = data_str.split('~')
+            if len(elements) > 3:
+                price = float(elements[3])
+                if price > 0:
+                    return price * 100, "腾讯黄金ETF"
     except Exception as e:
-        logger.warning(f"降级获取现货价异常: {e}")
+        logger.warning(f"获取腾讯黄金ETF数据异常: {e}")
+
+    # --- 优先级 3：新浪财经 纽约金（国际兜底） ---
+    try:
+        url_comex = "https://hq.sinajs.cn/?_=&list=hf_GC"
+        headers = {'Referer': 'https://finance.sina.com.cn'}
+        resp = requests.get(url_comex, headers=headers, timeout=5)
+        resp.encoding = 'gbk'
+        if resp.status_code == 200:
+            match = re.search(r'"(.*)"', resp.text)
+            if match:
+                data_str = match.group(1)
+                elements = data_str.split(',')
+                if len(elements) > 0:
+                    price = float(elements[0])
+                    if price > 0:
+                        # 1盎司 ≈ 31.1035克，按照约 7.2 的汇率粗略换算
+                        return price * 7.2 / 31.1035, "新浪纽约金"
+    except Exception as e:
+        logger.warning(f"获取新浪纽约金异常: {e}")
+
+    # --- 优先级 4：历史数据兜底 ---
+    try:
+        if not df_hist.empty:
+            latest_row = df_hist.iloc[-1]
+            latest_date = latest_row['Date']
+            latest_date_str = latest_date.strftime('%m-%d')
+            return float(latest_row['Gold_RMB_Gram']), f"历史数据({latest_date_str})"
+    except Exception as e:
+        logger.warning(f"获取历史数据兜底异常: {e}")
         
     return None, "等待更新"
 
@@ -177,7 +192,7 @@ def generate_and_save_html():
         df_hist = df_hist.rename(columns={'date': 'Date', 'close': 'Gold_RMB_Gram'})
         
         # 2. 调用智能降级策略获取今日价格
-        rt_price, price_source = get_dynamic_today_price(now_beijing)
+        rt_price, price_source = get_dynamic_today_price(now_beijing, df_hist)
         
         # 3. 强制同源拼接：把获取到的最新价强行写在“今天”这一天
         if rt_price is not None:
